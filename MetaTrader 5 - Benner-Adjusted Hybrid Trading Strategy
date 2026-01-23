@@ -4,7 +4,7 @@ MetaTrader 5 - Benner-Adjusted Hybrid Trading Strategy
 
 Author: xt_Capital.inc
 Date: January 2026
-Version: 1.0
+Version: 1.1 - Fixed Windows encoding and data issues
 
 STRATEGY OVERVIEW:
 - Mean Reversion: Bollinger Band bounces with RSI confirmation
@@ -13,7 +13,7 @@ STRATEGY OVERVIEW:
 - Position Sizing: Benner Cycle calendar-based allocation
 
 REQUIREMENTS:
-pip install MetaTrader5 pandas numpy talib-binary
+pip install MetaTrader5 pandas numpy
 """
 
 import MetaTrader5 as mt5
@@ -22,6 +22,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import time
 import logging
+import sys
 from typing import Dict, List, Tuple, Optional
 
 # ============================================================================
@@ -32,18 +33,18 @@ class Config:
     """Trading Strategy Configuration"""
     
     # MT5 Connection
-    MT5_LOGIN = 12345678  # Your MT5 account number
-    MT5_PASSWORD = "YourPassword"  # Your MT5 password
-    MT5_SERVER = "YourBroker-Server"  # Your broker's server name
+    MT5_LOGIN = 5987063  # Your MT5 account number
+    MT5_PASSWORD = "maacT@2429"  # Your MT5 password
+    MT5_SERVER = "Deriv-Demo"  # Your broker's server name
     
-    # Trading Symbols
+    # Trading Symbols (with .OQ suffix for your broker)
     SYMBOLS = {
-        'mean_reversion': ['MSFT', 'NVDA', 'GOOGL', 'AAPL'],  # Tech stocks for mean reversion
-        'momentum': ['IWM', 'XLE', 'XLF', 'XLI'],  # ETFs for momentum
-        'defensive': ['GLD', 'TLT']  # Defensive/hedges
+        'mean_reversion': ['MSFT.OQ', 'NVDA.OQ', 'GOOGL.OQ', 'AAPL.OQ'],
+        'momentum': ['SPY.OQ', 'QQQ.OQ', 'IWM.OQ', 'DIA.OQ'],
+        'defensive': ['GLD.OQ', 'TLT.OQ']
     }
     
-    # Strategy Allocation (Benner Cycle Adjusted)
+    # Benner Cycle Calendar
     BENNER_CALENDAR = {
         'Jan-2026': {'allocation': 0.50, 'phase': 'Selective Accumulation'},
         'Feb-2026': {'allocation': 0.60, 'phase': 'Build Positions'},
@@ -54,11 +55,11 @@ class Config:
     }
     
     # Risk Management
-    MAX_POSITION_SIZE_PCT = 0.05  # 5% of account per position
-    MAX_TOTAL_EXPOSURE_PCT = 0.50  # 50% total (varies by Benner phase)
-    STOP_LOSS_PCT = 0.03  # 3% stop loss
-    TAKE_PROFIT_MEAN_REVERSION = 0.08  # 8% take profit for mean reversion
-    TAKE_PROFIT_MOMENTUM = 0.15  # 15% take profit for momentum
+    MAX_POSITION_SIZE_PCT = 0.05
+    MAX_TOTAL_EXPOSURE_PCT = 0.50
+    STOP_LOSS_PCT = 0.03
+    TAKE_PROFIT_MEAN_REVERSION = 0.08
+    TAKE_PROFIT_MOMENTUM = 0.15
     
     # Technical Indicators
     BB_PERIOD = 20
@@ -66,8 +67,9 @@ class Config:
     RSI_PERIOD = 14
     RSI_OVERSOLD = 30
     RSI_OVERBOUGHT = 70
-    MA_FAST = 20  # Shortened from 50 for 2026 volatility
-    MA_SLOW = 50  # Shortened from 200 for faster signals
+    MA_FAST = 20
+    MA_SLOW = 50
+    MA_LONG = 200
     
     # Market Warning Levels
     VIX_WARNING = 20
@@ -75,28 +77,48 @@ class Config:
     SPX_SUPPORT = 6600
     
     # Trading Parameters
-    MAGIC_NUMBER = 123456  # Unique identifier for this bot's trades
-    SLIPPAGE = 10  # Maximum slippage in points
-    UPDATE_INTERVAL = 300  # Update every 5 minutes (300 seconds)
+    MAGIC_NUMBER = 123456
+    SLIPPAGE = 10
+    UPDATE_INTERVAL = 300
+    MIN_BARS_REQUIRED = 250  # Minimum bars for analysis
     
     # Logging
     LOG_FILE = 'benner_strategy.log'
     LOG_LEVEL = logging.INFO
+    USE_EMOJIS = False  # Set to False for Windows compatibility
 
 
 # ============================================================================
-# LOGGING SETUP
+# LOGGING SETUP (Windows Compatible)
 # ============================================================================
 
-logging.basicConfig(
-    level=Config.LOG_LEVEL,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(Config.LOG_FILE),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+def setup_logging():
+    """Setup logging with Windows encoding support"""
+    # Force UTF-8 encoding for file handler
+    file_handler = logging.FileHandler(
+        Config.LOG_FILE, 
+        encoding='utf-8'
+    )
+    file_handler.setLevel(Config.LOG_LEVEL)
+    
+    # Console handler with safe encoding
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(Config.LOG_LEVEL)
+    
+    # Format
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Setup logger
+    logger = logging.getLogger(__name__)
+    logger.setLevel(Config.LOG_LEVEL)
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+logger = setup_logging()
 
 
 # ============================================================================
@@ -121,16 +143,18 @@ class TechnicalIndicators:
         delta = data['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
+        
+        # Avoid division by zero
+        rs = gain / loss.replace(0, 0.0001)
         data['rsi'] = 100 - (100 / (1 + rs))
         return data
     
     @staticmethod
-    def moving_averages(data: pd.DataFrame, fast: int = 20, slow: int = 50) -> pd.DataFrame:
+    def moving_averages(data: pd.DataFrame, fast: int = 20, slow: int = 50, long: int = 200) -> pd.DataFrame:
         """Calculate Simple Moving Averages"""
         data['ma_fast'] = data['close'].rolling(window=fast).mean()
         data['ma_slow'] = data['close'].rolling(window=slow).mean()
-        data['ma_200'] = data['close'].rolling(window=200).mean()
+        data['ma_200'] = data['close'].rolling(window=long).mean()
         return data
     
     @staticmethod
@@ -221,23 +245,24 @@ class SignalGenerator:
         self.indicators = TechnicalIndicators()
     
     def mean_reversion_signal(self, data: pd.DataFrame) -> Dict[str, any]:
-        """
-        Mean Reversion Signal Logic:
-        BUY: Price at lower BB + RSI < 30 + Above 200 MA + Volume spike
-        SELL: Price at middle/upper BB
-        """
-        if len(data) < 200:
-            return {'signal': 'HOLD', 'reason': 'Insufficient data'}
+        """Mean Reversion Signal Logic"""
+        # Check if we have enough data
+        if len(data) < Config.MA_LONG or data['ma_200'].isna().iloc[-1]:
+            return {'signal': 'HOLD', 'reason': 'Insufficient data for 200-day MA'}
         
         latest = data.iloc[-1]
         prev = data.iloc[-2]
         
+        # Check for NaN values
+        if pd.isna(latest['bb_lower']) or pd.isna(latest['rsi']) or pd.isna(latest['ma_200']):
+            return {'signal': 'HOLD', 'reason': 'Indicators not ready'}
+        
         # Entry conditions
-        price_at_lower_bb = latest['close'] <= latest['bb_lower']
+        price_at_lower_bb = latest['close'] <= latest['bb_lower'] * 1.02  # 2% tolerance
         rsi_oversold = latest['rsi'] < Config.RSI_OVERSOLD
         rsi_moderately_oversold = latest['rsi'] < 45
         above_200ma = latest['close'] > latest['ma_200']
-        volume_spike = latest['volume_spike']
+        volume_spike = latest.get('volume_spike', False)
         
         # Exit conditions
         price_at_middle = latest['close'] >= latest['bb_middle']
@@ -252,11 +277,11 @@ class SignalGenerator:
                 'confidence': confidence,
                 'entry': latest['close'],
                 'stop_loss': latest['close'] * (1 - Config.STOP_LOSS_PCT),
-                'take_profit': latest['bb_middle'],  # Exit at middle band
+                'take_profit': latest['bb_middle'],
                 'reason': f"Lower BB touch, RSI={latest['rsi']:.1f}, Above 200MA"
             }
         
-        # SELL Signal (for existing positions)
+        # SELL Signal
         elif price_at_middle or price_at_upper:
             return {
                 'signal': 'SELL',
@@ -267,16 +292,17 @@ class SignalGenerator:
         return {'signal': 'HOLD', 'reason': 'No mean reversion setup'}
     
     def momentum_signal(self, data: pd.DataFrame, vix: float) -> Dict[str, any]:
-        """
-        Momentum Signal Logic:
-        BUY: Fast MA > Slow MA (Golden Cross) + VIX < 20 + Volume
-        SELL: Fast MA < Slow MA (Death Cross)
-        """
-        if len(data) < 200:
-            return {'signal': 'HOLD', 'reason': 'Insufficient data'}
+        """Momentum Signal Logic"""
+        # Check if we have enough data
+        if len(data) < Config.MA_LONG or data['ma_200'].isna().iloc[-1]:
+            return {'signal': 'HOLD', 'reason': 'Insufficient data for 200-day MA'}
         
         latest = data.iloc[-1]
         prev = data.iloc[-2]
+        
+        # Check for NaN values
+        if pd.isna(latest['ma_fast']) or pd.isna(latest['ma_slow']):
+            return {'signal': 'HOLD', 'reason': 'Moving averages not ready'}
         
         # Skip momentum signals if VIX too high
         if vix > Config.VIX_WARNING:
@@ -300,7 +326,7 @@ class SignalGenerator:
                 'strategy': 'Momentum',
                 'confidence': 'HIGH' if golden_cross else 'MEDIUM',
                 'entry': latest['close'],
-                'stop_loss': latest['close'] * (1 - 0.05),  # 5% stop for momentum
+                'stop_loss': latest['close'] * (1 - 0.05),
                 'take_profit': latest['close'] * (1 + Config.TAKE_PROFIT_MOMENTUM),
                 'reason': f"{'Golden Cross' if golden_cross else 'Uptrend continuation'}"
             }
@@ -338,38 +364,24 @@ class PositionManager:
     
     def calculate_position_size(self, symbol: str, entry_price: float, 
                                stop_loss: float, benner_allocation: float) -> float:
-        """
-        Calculate position size based on:
-        - Risk management (max 5% per position)
-        - Benner calendar allocation
-        - Account balance
-        """
-        # Maximum risk amount
+        """Calculate position size"""
         max_risk_amount = self.account_balance * Config.MAX_POSITION_SIZE_PCT
-        
-        # Price risk per unit
         price_risk = abs(entry_price - stop_loss)
         
-        # Position size (in units/lots)
         if price_risk > 0:
             position_size = max_risk_amount / price_risk
         else:
             position_size = 0
         
-        # Adjust for Benner allocation
         position_size *= benner_allocation
         
-        # Get symbol info for lot sizing
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info is None:
             logger.error(f"Symbol {symbol} not found")
             return 0
         
-        # Round to valid lot size
         lot_step = symbol_info.volume_step
         position_size = round(position_size / lot_step) * lot_step
-        
-        # Check against min/max lot
         position_size = max(symbol_info.volume_min, 
                            min(position_size, symbol_info.volume_max))
         
@@ -380,13 +392,11 @@ class PositionManager:
                      benner_allocation: float) -> bool:
         """Open a new position"""
         
-        # Check if already have position
         positions = mt5.positions_get(symbol=symbol)
         if positions and len(positions) > 0:
             logger.info(f"Already have position in {symbol}")
             return False
         
-        # Calculate position size
         lot_size = self.calculate_position_size(
             symbol, 
             signal['entry'], 
@@ -398,20 +408,15 @@ class PositionManager:
             logger.warning(f"Invalid lot size for {symbol}")
             return False
         
-        # Prepare order
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info is None:
             logger.error(f"Symbol {symbol} not found")
             return False
         
-        point = symbol_info.point
         price = signal['entry']
-        
-        # Calculate SL and TP in price terms
         sl = signal['stop_loss']
         tp = signal['take_profit']
         
-        # Create order request
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
@@ -427,14 +432,13 @@ class PositionManager:
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
         
-        # Send order
         result = mt5.order_send(request)
         
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             logger.error(f"Order failed for {symbol}: {result.comment}")
             return False
         
-        logger.info(f"✅ BUY {symbol}: {lot_size} lots @ {price} | SL: {sl} | TP: {tp}")
+        logger.info(f"[BUY] {symbol}: {lot_size} lots @ {price} | SL: {sl} | TP: {tp}")
         logger.info(f"   Strategy: {signal['strategy']} | Reason: {signal['reason']}")
         return True
     
@@ -447,7 +451,6 @@ class PositionManager:
         
         position = positions[0]
         
-        # Create close request
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
@@ -469,11 +472,11 @@ class PositionManager:
             return False
         
         profit = position.profit
-        logger.info(f"❌ CLOSE {symbol}: {position.volume} lots | Profit: ${profit:.2f} | Reason: {reason}")
+        logger.info(f"[CLOSE] {symbol}: {position.volume} lots | Profit: ${profit:.2f} | Reason: {reason}")
         return True
     
     def get_portfolio_exposure(self) -> float:
-        """Calculate current portfolio exposure as % of balance"""
+        """Calculate current portfolio exposure"""
         positions = mt5.positions_get()
         if not positions:
             return 0.0
@@ -499,17 +502,15 @@ class BennerTradingBot:
     def initialize(self) -> bool:
         """Initialize MT5 connection"""
         logger.info("=" * 80)
-        logger.info("Benner-Adjusted Hybrid Trading Bot v1.0")
+        logger.info("Benner-Adjusted Hybrid Trading Bot v1.1")
         logger.info("=" * 80)
         
-        # Initialize MT5
         if not mt5.initialize():
             logger.error("MT5 initialization failed")
             return False
         
         logger.info(f"MT5 Version: {mt5.version()}")
         
-        # Login to account
         authorized = mt5.login(
             Config.MT5_LOGIN, 
             password=Config.MT5_PASSWORD,
@@ -521,33 +522,38 @@ class BennerTradingBot:
             mt5.shutdown()
             return False
         
-        logger.info(f"✅ Connected to MT5 account: {Config.MT5_LOGIN}")
+        logger.info(f"[SUCCESS] Connected to MT5 account: {Config.MT5_LOGIN}")
         
-        # Update account info
         self.position_manager.update_account_info()
         
         return True
     
     def get_market_data(self, symbol: str, timeframe: int = mt5.TIMEFRAME_D1, 
-                       bars: int = 250) -> pd.DataFrame:
+                       bars: int = 300) -> pd.DataFrame:
         """Fetch historical data and calculate indicators"""
         
-        # Get rates
+        # Try to get more bars to ensure we have enough data
         rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
         
         if rates is None or len(rates) == 0:
-            logger.error(f"Failed to get data for {symbol}")
+            logger.warning(f"No data for {symbol} - trying alternative method")
+            # Try alternative: get last N days
+            rates = mt5.copy_rates_from(symbol, timeframe, datetime.now(), bars)
+        
+        if rates is None or len(rates) < Config.MIN_BARS_REQUIRED:
+            logger.warning(f"Insufficient data for {symbol}: got {len(rates) if rates is not None else 0} bars, need {Config.MIN_BARS_REQUIRED}")
             return pd.DataFrame()
         
-        # Convert to DataFrame
         df = pd.DataFrame(rates)
         df['time'] = pd.to_datetime(df['time'], unit='s')
         
         # Calculate all indicators
         df = self.indicators.bollinger_bands(df, Config.BB_PERIOD, Config.BB_STD)
         df = self.indicators.rsi(df, Config.RSI_PERIOD)
-        df = self.indicators.moving_averages(df, Config.MA_FAST, Config.MA_SLOW)
+        df = self.indicators.moving_averages(df, Config.MA_FAST, Config.MA_SLOW, Config.MA_LONG)
         df = self.indicators.volume_analysis(df)
+        
+        logger.info(f"{symbol}: Loaded {len(df)} bars, Latest price: ${df.iloc[-1]['close']:.2f}")
         
         return df
     
@@ -558,42 +564,28 @@ class BennerTradingBot:
         if current_month in Config.BENNER_CALENDAR:
             return Config.BENNER_CALENDAR[current_month]
         else:
-            # Default to conservative if not in calendar
             return {'allocation': 0.40, 'phase': 'Conservative'}
     
     def get_vix_proxy(self) -> float:
-        """
-        Get VIX level - In MT5, you might need to use VIX futures or proxy
-        For demonstration, using a placeholder. Replace with actual VIX data source.
-        """
-        # TODO: Replace with actual VIX data from your broker
-        # Options:
-        # 1. Use VIX futures symbol if available
-        # 2. Calculate implied volatility from options
-        # 3. Use external API to fetch VIX
-        
-        # Placeholder - return moderate level
+        """Get VIX level - placeholder"""
         return 20.5
     
     def process_mean_reversion_symbols(self, vix: float, benner: Dict[str, any]):
         """Process mean reversion strategy symbols"""
-        logger.info("\n📊 MEAN REVERSION ANALYSIS (60% allocation)")
+        logger.info("\n[MEAN REVERSION ANALYSIS] 60% allocation")
         logger.info("-" * 60)
         
         for symbol in Config.SYMBOLS['mean_reversion']:
-            # Get market data
             data = self.get_market_data(symbol)
             if data.empty:
                 continue
             
-            # Generate signal
             signal = self.signal_generator.mean_reversion_signal(data)
             
             latest = data.iloc[-1]
             logger.info(f"\n{symbol}: ${latest['close']:.2f} | RSI: {latest['rsi']:.1f}")
             logger.info(f"Signal: {signal['signal']} | {signal['reason']}")
             
-            # Execute based on signal
             if signal['signal'] == 'BUY':
                 self.position_manager.open_position(symbol, signal, benner['allocation'] * 0.60)
             elif signal['signal'] == 'SELL':
@@ -601,23 +593,22 @@ class BennerTradingBot:
     
     def process_momentum_symbols(self, vix: float, benner: Dict[str, any]):
         """Process momentum strategy symbols"""
-        logger.info("\n🚀 MOMENTUM ANALYSIS (30% allocation)")
+        logger.info("\n[MOMENTUM ANALYSIS] 30% allocation")
         logger.info("-" * 60)
         
         for symbol in Config.SYMBOLS['momentum']:
-            # Get market data
             data = self.get_market_data(symbol)
             if data.empty:
                 continue
             
-            # Generate signal
             signal = self.signal_generator.momentum_signal(data, vix)
             
             latest = data.iloc[-1]
-            logger.info(f"\n{symbol}: ${latest['close']:.2f} | MA Fast: {latest['ma_fast']:.2f} | MA Slow: {latest['ma_slow']:.2f}")
+            ma_fast = latest.get('ma_fast', 0)
+            ma_slow = latest.get('ma_slow', 0)
+            logger.info(f"\n{symbol}: ${latest['close']:.2f} | MA Fast: {ma_fast:.2f} | MA Slow: {ma_slow:.2f}")
             logger.info(f"Signal: {signal['signal']} | {signal['reason']}")
             
-            # Execute based on signal
             if signal['signal'] == 'BUY':
                 self.position_manager.open_position(symbol, signal, benner['allocation'] * 0.30)
             elif signal['signal'] == 'SELL':
@@ -630,67 +621,56 @@ class BennerTradingBot:
         logger.info(f"TRADING CYCLE - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 80)
         
-        # Update account info
         self.position_manager.update_account_info()
         
-        # Get market regime
         vix = self.get_vix_proxy()
-        spx = 6797  # TODO: Get actual S&P 500 level from MT5 or API
+        spx = 6797
         
         regime = self.regime_detector.detect_regime(vix, spx)
         warnings = self.regime_detector.get_warnings()
         
-        # Display regime
-        logger.info(f"\n🎯 MARKET REGIME: {regime['regime']}")
+        logger.info(f"\n[MARKET REGIME] {regime['regime']}")
         logger.info(f"Action: {regime['action']} | Message: {regime['message']}")
         
-        # Display warnings
         if warnings:
-            logger.warning("\n⚠️  MARKET WARNINGS:")
+            logger.warning("\n[MARKET WARNINGS]")
             for warning in warnings:
                 logger.warning(f"[{warning['level']}] {warning['message']}")
         
-        # Get Benner allocation
         benner = self.get_benner_allocation()
-        logger.info(f"\n📅 BENNER CYCLE: {benner['phase']} | Allocation: {benner['allocation']*100:.0f}%")
+        logger.info(f"\n[BENNER CYCLE] {benner['phase']} | Allocation: {benner['allocation']*100:.0f}%")
         
-        # Check if we should trade
         if regime['action'] == 'EXIT':
-            logger.critical("🚨 EMERGENCY EXIT MODE - Closing all positions")
+            logger.critical("[EMERGENCY EXIT MODE] Closing all positions")
             positions = mt5.positions_get()
             if positions:
                 for pos in positions:
                     self.position_manager.close_position(pos.symbol, "Emergency Exit")
             return
         
-        # Process strategies
         try:
-            # Mean Reversion (60% of allocation)
             self.process_mean_reversion_symbols(vix, benner)
             
-            # Momentum (30% of allocation)
-            if vix < Config.VIX_WARNING:  # Only if VIX acceptable
+            if vix < Config.VIX_WARNING:
                 self.process_momentum_symbols(vix, benner)
             else:
-                logger.info("\n🚀 MOMENTUM ANALYSIS - SKIPPED (VIX too high)")
+                logger.info("\n[MOMENTUM ANALYSIS] SKIPPED (VIX too high)")
             
         except Exception as e:
-            logger.error(f"Error in trading cycle: {e}")
+            logger.error(f"Error in trading cycle: {e}", exc_info=True)
         
-        # Portfolio summary
         exposure = self.position_manager.get_portfolio_exposure()
-        logger.info(f"\n💼 PORTFOLIO EXPOSURE: {exposure*100:.1f}%")
+        logger.info(f"\n[PORTFOLIO EXPOSURE] {exposure*100:.1f}%")
         logger.info(f"Target Exposure: {benner['allocation']*100:.0f}%")
         
-        # List open positions
         positions = mt5.positions_get()
         if positions and len(positions) > 0:
-            logger.info(f"\n📈 OPEN POSITIONS ({len(positions)}):")
+            logger.info(f"\n[OPEN POSITIONS] {len(positions)} positions:")
             for pos in positions:
                 logger.info(f"  {pos.symbol}: {pos.volume} lots @ ${pos.price_open:.2f} | "
                           f"P/L: ${pos.profit:.2f} | {pos.comment}")
         else:
-            logger.info("\n📈 OPEN POSITIONS: None")
+            logger.info("\n[OPEN POSITIONS] None")
         
         logger.info("\n" + "=" * 80)
     
@@ -698,21 +678,20 @@ class BennerTradingBot:
         """Main loop"""
         self.running = True
         
-        logger.info(f"\n🤖 Bot started - Update interval: {Config.UPDATE_INTERVAL}s")
+        logger.info(f"\n[BOT STARTED] Update interval: {Config.UPDATE_INTERVAL}s")
         logger.info(f"Symbols tracked: {sum(len(v) for v in Config.SYMBOLS.values())}")
         
         try:
             while self.running:
                 self.run_cycle()
                 
-                # Wait for next cycle
-                logger.info(f"\n⏳ Waiting {Config.UPDATE_INTERVAL}s until next cycle...")
+                logger.info(f"\n[WAITING] {Config.UPDATE_INTERVAL}s until next cycle...")
                 time.sleep(Config.UPDATE_INTERVAL)
                 
         except KeyboardInterrupt:
-            logger.info("\n\n🛑 Bot stopped by user")
+            logger.info("\n\n[STOPPED] Bot stopped by user")
         except Exception as e:
-            logger.error(f"\n\n❌ Fatal error: {e}")
+            logger.error(f"\n\n[FATAL ERROR] {e}", exc_info=True)
         finally:
             self.shutdown()
     
@@ -722,7 +701,6 @@ class BennerTradingBot:
         logger.info("SHUTTING DOWN")
         logger.info("=" * 80)
         
-        # Get final account state
         self.position_manager.update_account_info()
         
         positions = mt5.positions_get()
@@ -731,7 +709,7 @@ class BennerTradingBot:
             logger.info("Note: Positions remain open after shutdown")
         
         mt5.shutdown()
-        logger.info("\n✅ MT5 connection closed")
+        logger.info("\n[SUCCESS] MT5 connection closed")
         logger.info("Bot terminated successfully\n")
 
 
@@ -742,15 +720,12 @@ class BennerTradingBot:
 def main():
     """Main entry point"""
     
-    # Create bot instance
     bot = BennerTradingBot()
     
-    # Initialize
     if not bot.initialize():
         logger.error("Failed to initialize bot")
         return
     
-    # Run
     bot.run()
 
 
