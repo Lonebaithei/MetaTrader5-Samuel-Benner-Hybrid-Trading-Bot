@@ -74,21 +74,19 @@ pip install MetaTrader5 pandas numpy yfinance python-dotenv requests
 You should have these files:
 ```
 benner_bot_v3/
-├── benner_bot_v3.py          # Main bot (combine Part 1, 2, 3)
+├── benner_bot_v3.py          # Main bot (combined Part 1, 2, 3)
 ├── .env.template              # Configuration template
 └── README.md                  # This file
 ```
 
 ### **Step 3: Combine the Code Files**
 
-**IMPORTANT:** The bot code was split into 3 parts. You need to combine them:
+**IMPORTANT:** The bot code was split into 3 parts, and were combined for you.
 
-1. Create a new file: `benner_bot_v3.py`
+1. The main bot file : `benner_bot_v3.py` made up of;
 2. Copy Part 1 (up to MarketDataProvider)
 3. Append Part 2 (MarketRegime through PositionManager)
 4. Append Part 3 (BennerTradingBot and main())
-
-Or use the single-file version if provided.
 
 ---
 
